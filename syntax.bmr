@@ -86,24 +86,23 @@ async function loadMore(ordering) {
 </ul>
 
 
-
-<script bmr:server>
+server: {
   async function posts(ascending) {
     return fetch(`/posts?ascending=${ascending}`)
   }
-</script>
+}
 
-<script bmr:client>
+client: {
   const [sort, setSort] = useState(false)
 
   function toggleSort() {
     setSort(!sort())
   }
-</script>
+}
 
 <div>
   <ul>
-    <for {await posts(sort())}>
+    <for each={await posts(sort())}>
       {post => <li>{post.name}</li>}
     </for>
   </ul>
