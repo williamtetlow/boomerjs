@@ -1,17 +1,25 @@
 use std::{
-    fmt::{Result, Write},
+    cell::RefCell,
+    fmt::Result,
+    io::{Read, Write},
     path::Path,
+    rc::Rc,
+    sync::{Arc, Mutex},
 };
 
 use auto_impl::auto_impl;
 use swc_common::{
     errors::{ColorConfig, Handler},
     sync::Lrc,
-    SourceMap,
+    FilePathMapping, SourceMap,
 };
 use swc_ecma_ast::{
-    Expr, Ident, JSXClosingElement, JSXElement, JSXElementName, JSXOpeningElement, JSXText,
-    ModuleItem, Stmt,
+    Expr, ExprStmt, Ident, JSXClosingElement, JSXElement, JSXElementName, JSXExprContainer,
+    JSXOpeningElement, JSXText, ModuleItem, Script, Stmt,
+};
+use swc_ecma_codegen::{
+    text_writer::{JsWriter, WriteJs},
+    Emitter, Node,
 };
 use swc_ecma_parser::{lexer::Lexer, Capturing, Parser, StringInput, Syntax, TsConfig};
 use swc_ecma_visit::{
@@ -121,7 +129,7 @@ where
     }
 
     fn raw_write(&mut self, data: &str) -> Result {
-        self.writer.write_str(data)?;
+        self.writer.write(data.as_bytes());
 
         Ok(())
     }
@@ -171,19 +179,22 @@ where
     }
 }
 
-struct CodeGenerator<W>
+struct CodeGenerator<'a, WJSX, WJS>
 where
-    W: JSXWriter,
+    WJSX: JSXWriter,
+    WJS: WriteJs,
 {
-    writer: W,
+    writer: WJSX,
+    js_writer: &'a mut Emitter<'a, WJS>,
 }
 
-impl<W> CodeGenerator<W>
+impl<'a, WJSX, WJS> CodeGenerator<'a, WJSX, WJS>
 where
-    W: JSXWriter,
+    WJSX: JSXWriter,
+    WJS: WriteJs,
 {
-    pub fn new(writer: W) -> Self {
-        CodeGenerator { writer }
+    pub fn new(writer: WJSX, js_writer: &'a mut Emitter<'a, WJS>) -> Self {
+        CodeGenerator { writer, js_writer }
     }
 
     fn emit_jsx(&mut self, root: &JSXElement) -> Result {
@@ -195,9 +206,10 @@ where
     }
 }
 
-impl<W> Visit for CodeGenerator<W>
+impl<'a, WJSX, WJS> Visit for CodeGenerator<'a, WJSX, WJS>
 where
-    W: JSXWriter,
+    WJSX: JSXWriter,
+    WJS: WriteJs,
 {
     fn visit_jsx_element(&mut self, node: &JSXElement) {
         node.visit_children_with(self);
@@ -227,12 +239,49 @@ where
         }
     }
 
+    fn visit_jsx_expr_container(&mut self, node: &JSXExprContainer) {
+        self.writer.write_raw("`,");
+        node.expr.emit_with(&mut self.js_writer);
+        self.writer.write_raw(",`");
+    }
+
     fn visit_jsx_text(&mut self, node: &JSXText) {
         self.writer.write_str(&*node.value);
     }
 
     fn visit_ident(&mut self, node: &Ident) {
         self.writer.write_raw(&*node.sym);
+    }
+}
+
+trait EmitBoomer {
+    fn emit_stmt(&mut self, stmt: &Stmt);
+    fn emit_jsx_expr(&mut self, expr: &Expr);
+}
+
+impl<'a, W> EmitBoomer for Emitter<'a, W>
+where
+    W: WriteJs,
+{
+    fn emit_stmt(&mut self, stmt: &Stmt) {
+        stmt.emit_with(self).unwrap();
+    }
+
+    fn emit_jsx_expr(&mut self, expr: &Expr) {
+        expr.emit_with(self).unwrap();
+    }
+}
+
+#[derive(Debug, Default)]
+struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
+
+impl Write for SharedBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().flush()
     }
 }
 
@@ -275,11 +324,38 @@ fn main() {
 
     let boomer = folder.fold_module(ast);
 
-    let mut wr = String::new();
+    let cm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
 
-    let mut code_generator = CodeGenerator::new(BasicJSXWriter::new(&mut wr));
+    let server = boomer.body[0]
+        .as_stmt()
+        .unwrap()
+        .as_labeled()
+        .unwrap()
+        .body
+        .as_block()
+        .unwrap()
+        .stmts
+        .to_owned();
 
-    let jsx = boomer.body[0]
+    let buf = SharedBuffer::default();
+
+    let mut emitter = Emitter {
+        cfg: swc_ecma_codegen::Config { minify: false },
+        cm: cm.clone(),
+        comments: None,
+        wr: JsWriter::new(cm, "\n", SharedBuffer(Arc::clone(&buf.0)), None),
+    };
+
+    for stmt in server {
+        emitter.emit_stmt(&stmt);
+    }
+
+    let mut code_generator = CodeGenerator::new(
+        BasicJSXWriter::new(SharedBuffer(Arc::clone(&buf.0))),
+        &mut emitter,
+    );
+
+    let jsx = boomer.body[1]
         .as_stmt()
         .unwrap()
         .as_expr()
@@ -290,5 +366,5 @@ fn main() {
 
     code_generator.emit_jsx(&jsx).expect("Failed to emit");
 
-    std::fs::write("./out.js", wr).expect("Failed to write file");
+    std::fs::write("./out.js", (*buf.0.lock().unwrap()).to_owned()).expect("Failed to write file");
 }

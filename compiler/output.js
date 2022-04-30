@@ -1,3 +1,17 @@
-import $$render from "boomerjs/internal";
+const hello = "Hello";
 
-export const $$Component = $$render(["<div><ul><li>Post Name</li></ul></div>"]);
+export const $$Component = [
+  `<div>
+
+  <h1>`,
+  hello,
+  ` Boomer</h1>
+
+  <ul>
+
+    <li>Post Name</li>
+
+  </ul>
+
+</div>`,
+];
