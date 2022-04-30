@@ -9,6 +9,7 @@ export default () => {
         console.log(typeof chunk);
         if (typeof chunk === "string") {
           controller.enqueue(encoder.encode(chunk));
+          continue;
         }
 
         const resolved = await Promise.resolve(chunk);
