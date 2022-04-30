@@ -15,9 +15,9 @@ export default () => {
 
         if (typeof resolved === "string") {
           controller.enqueue(encoder.encode(resolved));
+        } else {
+          controller.enqueue(encoder.encode(JSON.stringify(resolved)));
         }
-
-        controller.enqueue(encoder.encode(JSON.stringify(resolved)));
       }
       controller.close();
     },
