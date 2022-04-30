@@ -187,7 +187,10 @@ where
     }
 
     fn emit_jsx(&mut self, root: &JSXElement) -> Result {
+        self.writer.write_raw("export const $$Component = [`")?;
         root.visit_with(self);
+        self.writer.write_raw("`]")?;
+        self.writer.write_newline()?;
         Ok(())
     }
 }
@@ -273,6 +276,7 @@ fn main() {
     let boomer = folder.fold_module(ast);
 
     let mut wr = String::new();
+
     let mut code_generator = CodeGenerator::new(BasicJSXWriter::new(&mut wr));
 
     let jsx = boomer.body[0]
@@ -286,5 +290,5 @@ fn main() {
 
     code_generator.emit_jsx(&jsx).expect("Failed to emit");
 
-    println!("{}", wr);
+    std::fs::write("./out.js", wr).expect("Failed to write file");
 }
