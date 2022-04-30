@@ -21,5 +21,5 @@ server: {
   <ul>
     <li>Post Name</li>
   </ul>
-  <pre>{await getJSON()}</pre>
+  <pre>{getJSON()}</pre>
 </div>;

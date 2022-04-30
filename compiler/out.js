@@ -21,6 +21,6 @@ export const $$Component = [`<div>
 
   </ul>
 
-  <pre>`,await getJSON(),`</pre>
+  <pre>`,getJSON(),`</pre>
 
 </div>`]

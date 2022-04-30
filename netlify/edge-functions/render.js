@@ -11,9 +11,13 @@ export default () => {
           controller.enqueue(encoder.encode(chunk));
         }
 
-        if (typeof chunk === "function") {
-          controller.enqueue(encoder.encode(await chunk()));
+        const resolved = await Promise.resolve(chunk);
+
+        if (typeof resolved === "string") {
+          controller.enqueue(encoder.encode(resolved));
         }
+
+        controller.enqueue(encoder.encode(JSON.stringify(resolved)));
       }
       controller.close();
     },
