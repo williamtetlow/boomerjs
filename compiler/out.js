@@ -1,17 +1,25 @@
 const hello = "Hell yeah";
 function boomer() {
-    return "you boomer";
+  return "you boomer";
 }
 async function getJSON() {
-    const response = await fetch("https://dummyjson.com/products/1");
-    const json = await response.json();
-    return JSON.stringify(json);
+  const response = await fetch("https://dummyjson.com/products/1");
+  const json = await response.json();
+
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+
+  return JSON.stringify(json);
 }
-export const $$Component = [`<div>
+export const $$Component = [
+  `<div>
 
   <h1>
 
-    `,hello,` `,boomer(),`
+    `,
+  hello,
+  ` `,
+  boomer(),
+  `
 
   </h1>
 
@@ -21,6 +29,9 @@ export const $$Component = [`<div>
 
   </ul>
 
-  <pre>`,getJSON(),`</pre>
+  <pre>`,
+  getJSON(),
+  `</pre>
 
-</div>`]
+</div>`,
+];
