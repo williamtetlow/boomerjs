@@ -11,7 +11,7 @@ export const $$Component = [`<div >
 
   <h1 >
 
-    {hello} {boomer()}
+    `,hello,` `,boomer(),`
 
   <h1 >
 
@@ -21,6 +21,6 @@ export const $$Component = [`<div >
 
   <ul >
 
-  <pre >{getJSON()}<pre >
+  <pre >`,getJSON(),`<pre >
 
 <div >`]

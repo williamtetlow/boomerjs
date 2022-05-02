@@ -1,11 +1,7 @@
 use std::{borrow::Cow, path::Path};
 
 use swc_atoms::JsWord;
-use swc_common::{
-    errors::{DiagnosticBuilder, Handler},
-    sync::Lrc,
-    SourceMap, Span, Spanned,
-};
+use swc_common::{errors::Handler, sync::Lrc, SourceMap, Span, Spanned};
 use swc_ecma_ast::{Expr, JSXElement, LabeledStmt, ModuleDecl, ModuleItem, Stmt};
 use swc_ecma_parser::{
     lexer::Lexer, Capturing, Parser as SWCParser, StringInput, Syntax, TsConfig,

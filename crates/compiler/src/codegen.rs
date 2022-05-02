@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Cursor, Read, Write},
+    io::{self, Write},
     sync::{Arc, Mutex},
 };
 
@@ -15,7 +15,7 @@ use swc_ecma_codegen::{
     list::ListFormat,
     text_writer::{JsWriter, WriteJs},
     util::SourceMapperExt,
-    Config, Emitter as SWCEmitter,
+    Emitter as SWCEmitter,
 };
 
 use crate::parser::ParseResult;
@@ -232,7 +232,7 @@ where
         }
 
         if let Some(jsx) = result.jsx {
-            self.emit_bmr_jsx(&*jsx);
+            self.emit_bmr_jsx(&*jsx)?;
         }
 
         Ok(())
@@ -240,7 +240,7 @@ where
 
     pub fn emit_bmr_jsx(&mut self, node: &JSXElement) -> Result {
         self.wr.write_str("export const $$Component = [`")?;
-        self.emit_jsx_element(node);
+        self.emit_jsx_element(node)?;
         self.wr.write_str("`]")
     }
 
@@ -257,7 +257,7 @@ where
         emit!(node.name);
         space!();
 
-        // TODO attrs
+        self.emit_jsx_attributes(node.span, &node.attrs)?;
 
         if node.self_closing {
             punct!("/");
@@ -335,9 +335,9 @@ where
 
     #[bmr_emitter]
     fn emit_jsx_expr_container(&mut self, node: &JSXExprContainer) -> Result {
-        punct!("{");
+        punct!("`,");
         emit_swc!(node.expr);
-        punct!("}");
+        punct!(",`");
     }
 
     #[bmr_emitter]
@@ -358,13 +358,7 @@ where
     #[bmr_emitter]
     fn emit_jsx_fragment(&mut self, node: &JSXFragment) -> Result {
         emit!(node.opening);
-
-        // self.emit_list(
-        //     node.span(),
-        //     Some(&node.children),
-        //     ListFormat::JsxElementOrFragmentChildren,
-        // )?;
-
+        self.emit_jsx_element_or_fragment_children(node.span, &node.children)?;
         emit!(node.closing);
     }
 
@@ -408,8 +402,6 @@ where
         }
     }
 
-    // JsxElementOrFragmentChildren: SingleLine | NoInterveningComments,
-
     fn emit_jsx_element_or_fragment_children(
         &mut self,
         parent_node: Span,
@@ -431,8 +423,6 @@ where
 
         // Emit each child.
         let mut previous_sibling: Option<Span> = None;
-        let mut should_decrease_indent_after_emit = false;
-
         for child in children {
             // Write the delimiter if this is not the first node.
             if let Some(previous_sibling) = previous_sibling {
@@ -463,11 +453,10 @@ where
         Ok(())
     }
 
-    // JsxElementAttributes: SingleLine | SpaceBetweenSiblings | NoInterveningComments,
     fn emit_jsx_attributes(
         &mut self,
         parent_node: Span,
-        children: &Vec<JSXElementChild>,
+        children: &Vec<JSXAttrOrSpread>,
     ) -> Result {
         let format = ListFormat::SingleLine
             | ListFormat::SpaceBetweenSiblings

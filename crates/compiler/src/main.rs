@@ -1,11 +1,7 @@
 mod codegen;
 mod parser;
 
-use std::{
-    io::{BufWriter, Read, Write},
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::path::Path;
 
 use swc_common::{
     errors::{ColorConfig, Handler},
