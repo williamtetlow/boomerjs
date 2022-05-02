@@ -3,11 +3,14 @@ name = "compiler"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.57"
 auto_impl = "0.5.0"
+codegen_macros = { version = "0.1.0", path = "../codegen_macros" }
+swc_atoms = "0.2.11"
 swc_common = { version = "0.17.25", features = ["tty-emitter"] }
+swc_macros_common = "0.3.4"
 swc_ecma_ast = "0.76.2"
 swc_ecma_codegen = "0.105.3"
 swc_ecma_codegen_macros = "0.7.0"

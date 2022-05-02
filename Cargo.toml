@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+  "crates/codegen_macros",
+  "crates/compiler"
+]

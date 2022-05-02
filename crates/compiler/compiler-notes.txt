@@ -1,6 +1,7 @@
 1. Identify server, client and JSX
-2. Parse server and client blocks as modules and identify functions and vars used in each
-3. Parse JSX and identify the deps used from server and client blocks
+2. Parse server and client blocks as modules and identify functions and vars used in each <
+3. Parse JSX and identify the deps used from server and client blocks                     < do these all in parallel
+4. Map the JSX AST into a boomer tree                                                     <
 4. Build graph of server and client deps. Components are server only by default (HTML strings) but when we identify client reactivity we need 
    to identify what runs where and when we need to render on server again
 
