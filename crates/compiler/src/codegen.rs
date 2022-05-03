@@ -6,9 +6,9 @@ use std::{
 use codegen_macros::{self, bmr_emitter};
 use swc_common::{sync::Lrc, SourceMap, Span, Spanned};
 use swc_ecma_ast::{
-    JSXAttr, JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXClosingElement, JSXClosingFragment,
-    JSXElement, JSXElementChild, JSXElementName, JSXEmptyExpr, JSXExpr, JSXExprContainer,
-    JSXFragment, JSXMemberExpr, JSXNamespacedName, JSXObject, JSXOpeningElement,
+    Expr, JSXAttr, JSXAttrName, JSXAttrOrSpread, JSXAttrValue, JSXClosingElement,
+    JSXClosingFragment, JSXElement, JSXElementChild, JSXElementName, JSXEmptyExpr, JSXExpr,
+    JSXExprContainer, JSXFragment, JSXMemberExpr, JSXNamespacedName, JSXObject, JSXOpeningElement,
     JSXOpeningFragment, JSXSpreadChild, JSXText,
 };
 use swc_ecma_codegen::{
@@ -226,7 +226,7 @@ where
     pub fn emit_bmr_stmts(&mut self, result: ParseResult) -> Result {
         if let Some(server) = result.server {
             // TODO don't unwrap here
-            for stmt in server.body.block().unwrap().stmts {
+            for stmt in server.block.stmts {
                 emit_swc!(self, stmt);
             }
         }
@@ -248,7 +248,10 @@ where
     fn emit_jsx_element(&mut self, node: &JSXElement) -> Result {
         emit!(node.opening);
         self.emit_jsx_element_or_fragment_children(node.span, &node.children)?;
-        emit!(node.opening);
+
+        if let Some(ref closing) = node.closing {
+            emit!(closing)
+        }
     }
 
     #[bmr_emitter]
@@ -262,6 +265,13 @@ where
         if node.self_closing {
             punct!("/");
         }
+        punct!(">");
+    }
+
+    #[bmr_emitter]
+    fn emit_jsx_closing_element(&mut self, node: &JSXClosingElement) -> Result {
+        punct!("</");
+        emit!(node.name);
         punct!(">");
     }
 
@@ -336,7 +346,16 @@ where
     #[bmr_emitter]
     fn emit_jsx_expr_container(&mut self, node: &JSXExprContainer) -> Result {
         punct!("`,");
-        emit_swc!(node.expr);
+        match &node.expr {
+            JSXExpr::JSXEmptyExpr(e) => emit!(e),
+            JSXExpr::Expr(expr) => {
+                if let Expr::JSXElement(e) = &**expr {
+                    emit!(e);
+                } else {
+                    emit_swc!(expr);
+                }
+            }
+        }
         punct!(",`");
     }
 
@@ -346,13 +365,6 @@ where
             JSXExpr::Expr(ref n) => emit_swc!(n),
             JSXExpr::JSXEmptyExpr(ref n) => emit!(n),
         }
-    }
-
-    #[bmr_emitter]
-    fn emit_jsx_closing_element(&mut self, node: &JSXClosingElement) -> Result {
-        punct!("</");
-        emit!(node.name);
-        punct!(">");
     }
 
     #[bmr_emitter]

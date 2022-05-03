@@ -1,11 +1,5 @@
 server: {
-  const hello = "Hell yeah";
-
-  function boomer() {
-    return "you boomer";
-  }
-
-  async function getJSON() {
+  async function get() {
     const response = await fetch("https://dummyjson.com/products/1");
 
     const json = await response.json();
@@ -15,11 +9,5 @@ server: {
 }
 
 <div>
-  <h1>
-    {hello} {boomer()}
-  </h1>
-  <ul>
-    <li>Post Name</li>
-  </ul>
-  <pre>{getJSON()}</pre>
+  <Await task={get()}>{(bla) => <pre>{bla}</pre>}</Await>
 </div>;
