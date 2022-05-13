@@ -23,7 +23,7 @@ fn main() {
         Handler::with_tty_emitter(ColorConfig::Auto, true, false, Some(source_map.clone()));
 
     let source_file = source_map
-        .load_file(Path::new("../../test_data/input.js"))
+        .load_file(Path::new("./test_data/input.js"))
         .expect("failed to read file");
 
     let lexer = Lexer::new(
@@ -73,7 +73,7 @@ fn main() {
     .unwrap();
 
     std::fs::write(
-        "../../test_data/output.js",
+        "./test_data/output.js",
         String::from_utf8_lossy(&buf).to_string(),
     )
     .expect("failed to write file");

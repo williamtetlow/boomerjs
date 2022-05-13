@@ -1,4 +1,7 @@
-use std::{borrow::Cow, collections::HashMap};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 use swc_atoms::JsWord;
 use swc_common::{
@@ -6,7 +9,8 @@ use swc_common::{
     Span, Spanned,
 };
 use swc_ecma_ast::{
-    BlockStmt, Expr, FnDecl, JSXElement, LabeledStmt, Module, ModuleDecl, ModuleItem, Stmt,
+    BlockStmt, Callee, Expr, FnDecl, JSXElement, Module, ModuleDecl, ModuleItem, Pat, Stmt,
+    VarDeclarator,
 };
 
 use swc_ecma_visit::{Visit, VisitWith};
@@ -53,6 +57,7 @@ impl ParserError {
 pub enum SyntaxError {
     UnexpectedLabeledStatement(JsWord),
     LabeledServerIsNotBlock,
+    LabeledClientIsNotBlock,
     MoreThanOneJSXRoot,
     UnexpectedTopLevelStatement,
     ServerFunctionRedeclared(JsWord),
@@ -68,6 +73,9 @@ impl SyntaxError {
             }
             SyntaxError::LabeledServerIsNotBlock => {
                 "the server label is not for a block statement".into()
+            }
+            SyntaxError::LabeledClientIsNotBlock => {
+                "the client label is not for a block statement".into()
             }
             SyntaxError::MoreThanOneJSXRoot => "only one JSX root permitted per file".into(),
             SyntaxError::UnexpectedTopLevelStatement => "unexpected top level statement".into(),
@@ -87,15 +95,21 @@ pub struct FunctionDeclaration {
 
 #[derive(Debug)]
 pub struct ServerBlock {
-    pub block: Box<BlockStmt>,
+    pub block: BlockStmt,
     _function_declarations: HashMap<JsWord, FunctionDeclaration>,
+}
+
+#[derive(Debug)]
+pub struct ClientBlock {
+    pub block: BlockStmt,
+    pub use_state: UseStateDeclarations,
 }
 
 #[derive(Debug)]
 pub struct ParseResult {
     pub declarations: Vec<ModuleDecl>,
     pub server: Option<ServerBlock>,
-    pub client: Option<LabeledStmt>,
+    pub client: Option<ClientBlock>,
     pub jsx: JSXElement,
 }
 
@@ -108,7 +122,7 @@ impl BmrParser {
     pub fn parse(&mut self, module: Module) -> anyhow::Result<ParseResult> {
         let mut declarations = vec![];
         let mut server: Option<ServerBlock> = None;
-        let mut client: Option<LabeledStmt> = None;
+        let mut client: Option<ClientBlock> = None;
         let mut jsx: Option<JSXElement> = None;
 
         for module_item in module.body {
@@ -125,14 +139,27 @@ impl BmrParser {
                                 self.errors.append(visitor.take_errors().as_mut());
 
                                 server = Some(ServerBlock {
-                                    block: Box::new(block),
+                                    block,
                                     _function_declarations: visitor.function_declarations,
                                 });
                             } else {
                                 self.emit_error(l.span, SyntaxError::LabeledServerIsNotBlock);
                             }
                         }
-                        "client" => client = Some(l),
+                        "client" => {
+                            if let Stmt::Block(block) = *l.body {
+                                let mut visitor = ClientVisitor::default();
+
+                                visitor.visit_block_stmt(&block);
+
+                                client = Some(ClientBlock {
+                                    block,
+                                    use_state: visitor.use_state,
+                                });
+                            } else {
+                                self.emit_error(l.span, SyntaxError::LabeledClientIsNotBlock);
+                            }
+                        }
                         _ => {
                             self.emit_error(
                                 l.label.span,
@@ -211,6 +238,56 @@ impl Visit for ServerVisitor {
 
             self.function_declarations
                 .insert(fn_decl.ident.sym.to_owned(), function_declaration);
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct UseStateDeclarations {
+    pub get: HashSet<JsWord>,
+    pub set: HashSet<JsWord>,
+}
+
+#[derive(Default)]
+struct ClientVisitor {
+    use_state: UseStateDeclarations,
+}
+
+impl ClientVisitor {
+    fn record_use_state_declaration(&mut self, decl: &VarDeclarator) {
+        if let Pat::Array(arr) = &decl.name {
+            match arr.elems.len() {
+                2 => {
+                    let get = arr.elems[0].as_ref();
+                    let set = arr.elems[1].as_ref();
+
+                    match (get, set) {
+                        (Some(Pat::Ident(get)), Some(Pat::Ident(set))) => {
+                            self.use_state.get.insert(get.id.sym.clone());
+                            self.use_state.set.insert(set.id.sym.clone());
+                        }
+                        _ => (), // TODO: throw error
+                    }
+                }
+                _ => (), // TODO: throw error
+            }
+        }
+        // TODO: handle other ways of initialising (e.g. const a = useState(0))
+    }
+}
+
+impl Visit for ClientVisitor {
+    fn visit_var_declarator(&mut self, decl: &VarDeclarator) {
+        if let Some(init) = &decl.init {
+            if let Expr::Call(call) = &**init {
+                if let Callee::Expr(e) = &call.callee {
+                    if let Expr::Ident(id) = &**e {
+                        if &*id.sym == "useState" {
+                            self.record_use_state_declaration(decl);
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -1,18 +1,21 @@
+use std::ops::{Deref, DerefMut};
+
 use swc_atoms::JsWord;
-use swc_common::DUMMY_SP;
+use swc_common::{Spanned, DUMMY_SP};
 use swc_ecma_ast::{
-    ArrayLit, BlockStmt, Decl, ExportDecl, Expr, ExprOrSpread, FnDecl, Function, Ident, JSXElement,
-    JSXElementName, JSXExpr, Lit, Module, ModuleDecl, ModuleItem, ReturnStmt, Stmt, Str,
+    ArrayLit, BlockStmt, CallExpr, Decl, ExportDecl, Expr, ExprOrSpread, FnDecl, Function, Ident,
+    JSXAttr, JSXElement, JSXElementChild, JSXElementName, JSXExpr, JSXExprContainer, JSXText, Lit,
+    Module, ModuleDecl, ModuleItem, ReturnStmt, Stmt, Str,
 };
 use swc_ecma_visit::{Visit, VisitWith};
 
-use crate::parser::{ParseResult, ServerBlock};
+use crate::parser::{ClientBlock, ParseResult, ServerBlock};
 
 pub struct BmrTransform;
 
 impl BmrTransform {
     pub fn transform(parse_result: ParseResult) -> Module {
-        let mut jsx_transform = JSXTransform::default();
+        let mut jsx_transform = JSXTransform::new(&parse_result.client);
         let markup = jsx_transform.transform(parse_result.jsx);
         let server_stmts = if let Some(server_block) = parse_result.server {
             ServerTransform::transform(server_block)
@@ -36,11 +39,6 @@ impl BmrTransform {
             body: module_items,
         }
     }
-}
-
-#[derive(Default)]
-struct JSXTransform {
-    cur_children: Vec<Option<ExprOrSpread>>,
 }
 
 macro_rules! html_open_tag {
@@ -86,7 +84,30 @@ macro_rules! array_lit {
     };
 }
 
-impl JSXTransform {
+#[derive(Default, Clone, Copy)]
+pub struct JSXTransformContext {
+    // <button onClick={...
+    in_attribute_expr: bool,
+    // <div>{...
+    in_child_expr: bool,
+}
+
+pub struct JSXTransform<'a> {
+    cur_children: Vec<Option<ExprOrSpread>>,
+
+    ctx: JSXTransformContext,
+
+    client_block: &'a Option<ClientBlock>,
+}
+
+impl<'a> JSXTransform<'a> {
+    pub fn new(client_block: &'a Option<ClientBlock>) -> Self {
+        Self {
+            cur_children: Default::default(),
+            ctx: Default::default(),
+            client_block,
+        }
+    }
     pub fn transform(&mut self, jsx: JSXElement) -> Vec<ModuleDecl> {
         self.visit_jsx_element(&jsx);
 
@@ -127,9 +148,60 @@ impl JSXTransform {
             decl: render_func,
         })]
     }
+
+    fn is_get_state(&self, id: JsWord) -> bool {
+        self.client_block
+            .as_ref()
+            .map_or(false, |block| block.use_state.get.contains(&id))
+    }
+
+    fn is_set_state(&self, id: JsWord) -> bool {
+        self.client_block
+            .as_ref()
+            .map_or(false, |block| block.use_state.set.contains(&id))
+    }
+
+    fn with_ctx(&'a mut self, ctx: JSXTransformContext) -> WithContext<'a> {
+        let orig_ctx = self.ctx;
+        self.set_ctx(ctx);
+
+        WithContext {
+            inner: self,
+            orig_ctx,
+        }
+    }
+
+    fn set_ctx(&mut self, ctx: JSXTransformContext) {
+        self.ctx = ctx;
+    }
 }
 
-impl Visit for JSXTransform {
+pub struct WithContext<'a> {
+    inner: &'a mut JSXTransform<'a>,
+    orig_ctx: JSXTransformContext,
+}
+
+impl<'a> Deref for WithContext<'a> {
+    type Target = JSXTransform<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner
+    }
+}
+
+impl<'a> DerefMut for WithContext<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner
+    }
+}
+
+impl<'a> Drop for WithContext<'a> {
+    fn drop(&mut self) {
+        self.inner.set_ctx(self.orig_ctx);
+    }
+}
+
+impl<'a> Visit for JSXTransform<'a> {
     fn visit_jsx_element(&mut self, jsx_el: &JSXElement) {
         match &jsx_el.opening.name {
             JSXElementName::Ident(id) => {
@@ -152,7 +224,57 @@ impl Visit for JSXTransform {
         }
     }
 
-    fn visit_jsx_expr_container(&mut self, expr_cont: &swc_ecma_ast::JSXExprContainer) {
+    fn visit_jsx_attr(&mut self, attr: &JSXAttr) {
+        self.ctx.in_attribute_expr = true;
+        // TODO: if is client side attribute (e.g onClick)
+        attr.visit_children_with(self);
+
+        self.ctx.in_attribute_expr = false;
+    }
+
+    fn visit_jsx_element_children(&mut self, children: &[JSXElementChild]) {
+        // here we have to ch
+
+        for child in children {
+            /*
+             * We are going to have to do two passes of the JSX
+             *
+             * 1. To identify the client side holes
+             * 2. To transform
+             *
+             * During 1. we should:
+             *
+             * 1. Record the spans of holes that need clientside reactivity.
+             * 2. Record the reactive dependants for that span
+             *
+             * During 2. when we come across a clientside hole we will need to track a bit more
+             *
+             * We need to:
+             * 1. Pull out a template that can be used for updating on the client with innerHTML
+             * 2. Attach selector to the element so we can find it in the DOM
+             * 3. Generate reactive get and set
+             */
+            let _span = child.span();
+
+            child.visit_with(self);
+        }
+    }
+
+    fn visit_jsx_element_child(&mut self, child: &JSXElementChild) {
+        match child {
+            JSXElementChild::JSXText(t) => t.visit_with(self),
+            JSXElementChild::JSXExprContainer(e) => {
+                self.ctx.in_child_expr = true;
+                e.visit_with(self);
+                self.ctx.in_child_expr = false;
+            }
+            JSXElementChild::JSXSpreadChild(s) => s.visit_with(self),
+            JSXElementChild::JSXElement(e) => e.visit_with(self),
+            JSXElementChild::JSXFragment(f) => f.visit_with(self),
+        }
+    }
+
+    fn visit_jsx_expr_container(&mut self, expr_cont: &JSXExprContainer) {
         if let JSXExpr::Expr(e) = &expr_cont.expr {
             self.cur_children.push(Some(ExprOrSpread {
                 spread: None,
@@ -161,7 +283,9 @@ impl Visit for JSXTransform {
         }
     }
 
-    fn visit_jsx_text(&mut self, txt: &swc_ecma_ast::JSXText) {
+    fn visit_call_expr(&mut self, call: &CallExpr) {}
+
+    fn visit_jsx_text(&mut self, txt: &JSXText) {
         self.cur_children.push(str_lit!(
             JsWord::from(format!("`{}`", &*txt.value)),
             txt.value.clone()
@@ -176,3 +300,13 @@ impl ServerTransform {
         server_block.block.stmts
     }
 }
+
+// struct ClientTransform;
+
+// impl ClientTransform {
+//     pub fn transform(&mut self, client_block: ClientBlock) ->
+// }
+
+// impl Visit for ClientTransform {
+
+// }
