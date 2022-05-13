@@ -1,4 +1,5 @@
 mod codegen;
+mod jsx_transform;
 mod parser;
 
 use std::path::Path;
