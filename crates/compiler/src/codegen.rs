@@ -232,7 +232,7 @@ where
         }
 
         if let Some(jsx) = result.jsx {
-            self.emit_bmr_jsx(&*jsx)?;
+            self.emit_bmr_jsx(&jsx)?;
         }
 
         Ok(())

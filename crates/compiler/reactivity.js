@@ -1,6 +1,6 @@
 server: {
-  async function get(page) {
-    const response = await fetch(`https://dummyjson.com/products/${page}`);
+  async function get() {
+    const response = await fetch("https://dummyjson.com/products/1");
 
     const json = await response.json();
 
@@ -12,12 +12,12 @@ client: {
   const [page, setPage] = useState(1);
 
   function incrementPage() {
-    setPage((page) => page++);
+    setPage(page() + 1);
   }
 }
 
 <div>
   <p>Current Page {page()}</p>
-  <Await task={get()}>{(bla) => <pre>{bla}</pre>}</Await>
+  <pre>{await get()}</pre>
   <button onClick={incrementPage}>Next Page</button>
 </div>;

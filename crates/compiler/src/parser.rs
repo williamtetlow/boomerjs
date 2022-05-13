@@ -1,9 +1,11 @@
-use std::{borrow::Cow, collections::HashMap, path::Path};
+use std::{borrow::Cow, collections::HashMap, rc};
 
 use swc_atoms::JsWord;
-use swc_common::{errors::Handler, sync::Lrc, SourceMap, Span, Spanned};
+use swc_common::{errors::Handler, sync::Lrc, SourceFile, SourceMap, Span, Spanned};
 use swc_ecma_ast::{
-    BlockStmt, Expr, FnDecl, Ident, JSXElement, LabeledStmt, ModuleDecl, ModuleItem, Stmt,
+    BlockStmt, Expr, FnDecl, Ident, JSXClosingElement, JSXElement, JSXElementChild, JSXElementName,
+    JSXExpr, JSXExprContainer, JSXOpeningElement, JSXText, LabeledStmt, ModuleDecl, ModuleItem,
+    Stmt,
 };
 use swc_ecma_parser::{
     lexer::Lexer, Capturing, Parser as SWCParser, StringInput, Syntax, TsConfig,
@@ -72,7 +74,8 @@ pub struct ParseResult {
     pub declarations: Vec<ModuleDecl>,
     pub server: Option<BoomerServerBlock>,
     pub client: Option<LabeledStmt>,
-    pub jsx: Option<Box<JSXElement>>,
+    pub jsx: Option<JSXElement>,
+    pub markup: Option<Node>,
 }
 
 pub struct Parser<'a> {
@@ -88,9 +91,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(&mut self, path: &Path) -> anyhow::Result<ParseResult> {
-        let source_file = self.source_map.load_file(path)?;
-
+    pub fn parse(&mut self, source_file: rc::Rc<SourceFile>) -> anyhow::Result<ParseResult> {
         let lexer = Lexer::new(
             Syntax::Typescript(TsConfig {
                 tsx: true,
@@ -150,7 +151,9 @@ impl<'a> Parser<'a> {
                             if result.jsx.is_some() {
                                 self.emit_error(e.span, Error::MoreThanOneJSXRoot);
                             } else {
-                                result.jsx = Some(jsx);
+                                result.jsx = Some(*jsx);
+                                // result.markup =
+                                //     Some(BoomerMarkupTransformer.parse_jsx_element(*jsx));
                             }
                         }
                     }
@@ -204,5 +207,192 @@ impl Visit for ServerVisitor {
             self.function_declarations
                 .insert(fn_decl.ident.sym.to_owned(), function_declaration);
         }
+    }
+}
+
+#[derive(Debug)]
+struct BoomerMarkup {
+    root: Node,
+}
+
+#[derive(Debug)]
+pub enum Node {
+    HTMLElement(HTMLElement),
+    Component(Component),
+    NotHandledYet,
+}
+
+#[derive(Debug)]
+pub enum Child {
+    Text(JSXText),
+    Expression(Expression),
+    HTMLElement(Box<HTMLElement>),
+    Component(Box<Component>),
+    NotHandledYet,
+}
+
+#[derive(Debug, Spanned)]
+pub struct HTMLElement {
+    pub span: Span,
+    pub opening: JSXOpeningElement,
+    pub children: Vec<Child>,
+    pub closing: Option<JSXClosingElement>,
+}
+
+#[derive(Debug, Spanned)]
+pub struct Component {
+    pub span: Span,
+    pub opening: JSXOpeningElement,
+    pub children: Vec<Child>,
+    pub closing: Option<JSXClosingElement>,
+}
+
+#[derive(Debug, Spanned)]
+pub struct Expression {
+    pub span: Span,
+    pub expr: JSXExpr,
+}
+
+/*
+    {get()}
+*/
+
+struct BoomerMarkupTransformer;
+
+impl BoomerMarkupTransformer {}
+
+trait JSXElementBoomerType {
+    fn is_component(&self) -> bool;
+    fn is_html(&self) -> bool;
+}
+
+impl JSXElementBoomerType for JSXElement {
+    fn is_component(&self) -> bool {
+        !self.is_html()
+    }
+
+    fn is_html(&self) -> bool {
+        match &self.opening.name {
+            JSXElementName::Ident(id) => id
+                .sym
+                .chars()
+                .nth(0)
+                .map_or(false, |first_char| first_char.is_lowercase()),
+            _ => false,
+        }
+    }
+}
+
+impl BoomerMarkupTransformer {
+    pub fn parse_boomer_markup(&mut self, root: JSXElement) -> BoomerMarkup {
+        let parsed_root = self.parse_jsx_element(root);
+
+        BoomerMarkup { root: parsed_root }
+    }
+
+    fn parse_jsx_element(&mut self, n: JSXElement) -> Node {
+        if n.is_html() {
+            Node::HTMLElement(HTMLElement {
+                span: n.span,
+                opening: n.opening,
+                children: self.parse_jsx_element_children(n.children),
+                closing: n.closing,
+            })
+        } else {
+            Node::Component(Component {
+                span: n.span,
+                opening: n.opening,
+                children: self.parse_jsx_element_children(n.children),
+                closing: n.closing,
+            })
+        }
+    }
+
+    fn parse_jsx_expr_container(&mut self, n: JSXExprContainer) -> Child {
+        Child::Expression(Expression {
+            span: n.span,
+            expr: n.expr,
+        })
+    }
+
+    fn parse_jsx_element_children(&mut self, n: Vec<JSXElementChild>) -> Vec<Child> {
+        n.into_iter()
+            .map(|child| self.parse_jsx_element_child(child))
+            .collect()
+    }
+
+    fn parse_jsx_element_child(&mut self, n: JSXElementChild) -> Child {
+        match n {
+            JSXElementChild::JSXText(text) => Child::Text(text),
+            JSXElementChild::JSXElement(el) => match self.parse_jsx_element(*el) {
+                Node::Component(c) => Child::Component(Box::new(c)),
+                Node::HTMLElement(h) => Child::HTMLElement(Box::new(h)),
+                _ => Child::NotHandledYet,
+            },
+            JSXElementChild::JSXExprContainer(expr) => self.parse_jsx_expr_container(expr),
+            _ => Child::NotHandledYet,
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::path::Path;
+
+    use swc_common::{
+        errors::{ColorConfig, Handler},
+        sync::Lrc,
+        FileName, SourceMap, DUMMY_SP,
+    };
+    use swc_ecma_ast::JSXText;
+
+    use crate::parser::{Child, Component, Node};
+
+    use super::{BoomerMarkup, BoomerMarkupTransformer, HTMLElement, Parser};
+
+    macro_rules! test {
+        ($input:expr,$(|)? $( $pattern:pat_param )|+ $( if $guard: expr )? $(,)?) => {
+            let source_map: Lrc<SourceMap> = Default::default();
+            let handler =
+                Handler::with_tty_emitter(ColorConfig::Auto, true, false, Some(source_map.clone()));
+
+            let mut parser = Parser::new(source_map.clone(), &handler);
+
+            let source_file =
+                source_map.new_source_file(FileName::Custom("./test.js".into()), $input.to_owned());
+
+            let result = parser.parse(source_file).expect("failed to parse");
+
+            let jsx = result.jsx.unwrap();
+
+            let mut transformer = BoomerMarkupTransformer;
+
+            let transformed = transformer.parse_boomer_markup(jsx);
+
+            assert!(matches!(transformed.root, $( $pattern )|+ $( if $guard )?))
+        };
+    }
+
+    #[test]
+    fn it_parses_html_element() {
+        test!(
+            "<h1>Hello World</h1>",
+            Node::HTMLElement(HTMLElement { children, .. }) if matches!(children.as_slice(), [Child::Text(JSXText { value, .. })] if &*value == "Hello World")
+        );
+    }
+
+    #[test]
+    fn it_parses_component() {
+        test!("<Component>Hello World</Component>", Node::Component(Component { children, .. }) if matches!(children.as_slice(), [Child::Text(JSXText { value, .. })] if &*value == "Hello World"));
+    }
+
+    #[test]
+    fn it_parses_nested_elements() {
+        test!("<nav><NavItem>Home</NavItem><NavItem>About</NavItem></nav>", Node::HTMLElement(HTMLElement { children, .. }) if matches!(children.as_slice(), [Child::Component(_), Child::Component(_)]));
+    }
+
+    #[test]
+    fn it_parses_expressions() {
+        test!("<div>{getData()}</div>", Node::HTMLElement(HTMLElement { children, .. }) if matches!(children.as_slice(), [Child::Expression(_)]));
     }
 }

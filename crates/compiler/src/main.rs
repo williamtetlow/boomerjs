@@ -21,9 +21,12 @@ fn main() {
         Handler::with_tty_emitter(ColorConfig::Auto, true, false, Some(source_map.clone()));
 
     let mut parser = Parser::new(source_map.clone(), &handler);
-    let result = parser
-        .parse(Path::new("./input.js"))
-        .expect("failed during parsing");
+
+    let source_file = source_map
+        .load_file(Path::new("./input.js"))
+        .expect("failed to read file");
+
+    let result = parser.parse(source_file).expect("failed during parsing");
 
     let buf = SharedBuffer::default();
 
