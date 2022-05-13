@@ -1,16 +1,45 @@
 use swc_atoms::JsWord;
 use swc_common::DUMMY_SP;
 use swc_ecma_ast::{
-    ArrayLit, Expr, ExprOrSpread, JSXElement, JSXElementName, JSXExpr, Lit, ModuleDecl, ReturnStmt,
-    Stmt, Str,
+    ArrayLit, BlockStmt, Decl, ExportDecl, Expr, ExprOrSpread, FnDecl, Function, Ident, JSXElement,
+    JSXElementName, JSXExpr, Lit, Module, ModuleDecl, ModuleItem, ReturnStmt, Stmt, Str,
 };
 use swc_ecma_visit::{Visit, VisitWith};
 
+use crate::parser::{ParseResult, ServerBlock};
+
+pub struct BmrTransform;
+
+impl BmrTransform {
+    pub fn transform(parse_result: ParseResult) -> Module {
+        let mut jsx_transform = JSXTransform::default();
+        let markup = jsx_transform.transform(parse_result.jsx);
+        let server_stmts = if let Some(server_block) = parse_result.server {
+            ServerTransform::transform(server_block)
+        } else {
+            vec![]
+        };
+
+        let mut module_items: Vec<ModuleItem> = vec![];
+
+        for stmt in server_stmts {
+            module_items.push(ModuleItem::Stmt(stmt));
+        }
+
+        for decl in markup {
+            module_items.push(ModuleItem::ModuleDecl(decl));
+        }
+
+        Module {
+            shebang: None,
+            span: DUMMY_SP,
+            body: module_items,
+        }
+    }
+}
+
 #[derive(Default)]
 struct JSXTransform {
-    module_decls: Vec<ModuleDecl>,
-    stmts: Vec<Stmt>,
-
     cur_children: Vec<Option<ExprOrSpread>>,
 }
 
@@ -58,20 +87,45 @@ macro_rules! array_lit {
 }
 
 impl JSXTransform {
-    pub fn transform_jsx(&mut self, jsx: &JSXElement) {
-        self.visit_jsx_element(jsx);
+    pub fn transform(&mut self, jsx: JSXElement) -> Vec<ModuleDecl> {
+        self.visit_jsx_element(&jsx);
 
         let arr = ArrayLit {
             span: DUMMY_SP,
             elems: self.cur_children.drain(..).collect(),
         };
 
-        let stmt = Stmt::Return(ReturnStmt {
+        let return_stmt = Stmt::Return(ReturnStmt {
             span: DUMMY_SP,
             arg: Some(Box::new(Expr::Array(arr))),
         });
 
-        self.stmts.push(stmt);
+        let render_func = Decl::Fn(FnDecl {
+            ident: Ident {
+                span: DUMMY_SP,
+                sym: JsWord::from("render"),
+                optional: false,
+            },
+            declare: false,
+            function: Function {
+                params: vec![],
+                decorators: vec![],
+                span: DUMMY_SP,
+                is_generator: false,
+                is_async: false,
+                type_params: None,
+                return_type: None,
+                body: Some(BlockStmt {
+                    span: DUMMY_SP,
+                    stmts: vec![return_stmt],
+                }),
+            },
+        });
+
+        vec![ModuleDecl::ExportDecl(ExportDecl {
+            span: DUMMY_SP,
+            decl: render_func,
+        })]
     }
 }
 
@@ -109,70 +163,16 @@ impl Visit for JSXTransform {
 
     fn visit_jsx_text(&mut self, txt: &swc_ecma_ast::JSXText) {
         self.cur_children.push(str_lit!(
-            JsWord::from(format!(r#""{}""#, &*txt.value)),
+            JsWord::from(format!("`{}`", &*txt.value)),
             txt.value.clone()
         ));
     }
 }
 
-#[cfg(test)]
-mod test {
-    use swc_common::{
-        errors::{ColorConfig, Handler},
-        sync::Lrc,
-        FileName, SourceMap, DUMMY_SP,
-    };
-    use swc_ecma_ast::{Module, ModuleItem};
-    use swc_ecma_codegen::{text_writer::JsWriter, Emitter};
+struct ServerTransform;
 
-    use crate::parser::Parser;
-
-    use super::JSXTransform;
-
-    #[test]
-    fn test() {
-        let input = "<div><h1>{hello}</h1><h2>{world}</h2></div>";
-        let source_map: Lrc<SourceMap> = Default::default();
-        let handler =
-            Handler::with_tty_emitter(ColorConfig::Auto, true, false, Some(source_map.clone()));
-
-        let mut parser = Parser::new(source_map.clone(), &handler);
-
-        let source_file =
-            source_map.new_source_file(FileName::Custom("./test.js".into()), input.to_owned());
-
-        let result = parser.parse(source_file).expect("failed to parse");
-
-        let jsx = result.jsx.unwrap();
-
-        let mut transformer = JSXTransform::default();
-
-        transformer.transform_jsx(&jsx);
-
-        println!("{:#?}", &transformer.stmts);
-
-        let mut buf = vec![];
-
-        let mut swc_emitter = Emitter {
-            cfg: swc_ecma_codegen::Config { minify: false },
-            cm: source_map.clone(),
-            comments: None,
-
-            wr: JsWriter::new(source_map.clone(), "\n", &mut buf, None),
-        };
-
-        let module = Module {
-            span: DUMMY_SP,
-            shebang: None,
-            body: transformer
-                .stmts
-                .into_iter()
-                .map(|stmt| ModuleItem::Stmt(stmt))
-                .collect(),
-        };
-
-        swc_emitter.emit_module(&module).unwrap();
-
-        println!("{:?}", String::from_utf8_lossy(&buf));
+impl ServerTransform {
+    pub fn transform(server_block: ServerBlock) -> Vec<Stmt> {
+        server_block.block.stmts
     }
 }

@@ -1,45 +1,77 @@
-use std::{borrow::Cow, collections::HashMap, rc};
+use std::{borrow::Cow, collections::HashMap};
 
 use swc_atoms::JsWord;
-use swc_common::{errors::Handler, sync::Lrc, SourceFile, SourceMap, Span, Spanned};
+use swc_common::{
+    errors::{DiagnosticBuilder, Handler},
+    Span, Spanned,
+};
 use swc_ecma_ast::{
-    BlockStmt, Expr, FnDecl, Ident, JSXClosingElement, JSXElement, JSXElementChild, JSXElementName,
-    JSXExpr, JSXExprContainer, JSXOpeningElement, JSXText, LabeledStmt, ModuleDecl, ModuleItem,
-    Stmt,
+    BlockStmt, Expr, FnDecl, JSXElement, LabeledStmt, Module, ModuleDecl, ModuleItem, Stmt,
 };
-use swc_ecma_parser::{
-    lexer::Lexer, Capturing, Parser as SWCParser, StringInput, Syntax, TsConfig,
-};
+
 use swc_ecma_visit::{Visit, VisitWith};
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ParserError {
+    error: Box<(Span, SyntaxError)>,
+}
+
+impl Spanned for ParserError {
+    fn span(&self) -> Span {
+        (*self.error).0
+    }
+}
+
+impl ParserError {
+    #[cold]
+    pub(crate) fn new(span: Span, error: SyntaxError) -> Self {
+        Self {
+            error: Box::new((span, error)),
+        }
+    }
+    pub fn into_kind(self) -> SyntaxError {
+        self.error.1
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub fn into_diagnostic(self, handler: &Handler) -> DiagnosticBuilder {
+        let span = self.span();
+
+        let kind = self.into_kind();
+        let msg = kind.msg();
+
+        let mut db = handler.struct_err(&msg);
+        db.set_span(span);
+
+        db
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
-pub enum Error {
+pub enum SyntaxError {
     UnexpectedLabeledStatement(JsWord),
     LabeledServerIsNotBlock,
-    LabeledClientIsNotBlock,
     MoreThanOneJSXRoot,
     UnexpectedTopLevelStatement,
     ServerFunctionRedeclared(JsWord),
 }
 
-impl Error {
+impl SyntaxError {
     #[cold]
     #[inline(never)]
     pub fn msg(&self) -> Cow<'static, str> {
         match self {
-            Error::UnexpectedLabeledStatement(word) => {
+            SyntaxError::UnexpectedLabeledStatement(word) => {
                 format!("{} is not a valid labeled block", word).into()
             }
-            Error::LabeledServerIsNotBlock => {
+            SyntaxError::LabeledServerIsNotBlock => {
                 "the server label is not for a block statement".into()
             }
-            Error::LabeledClientIsNotBlock => {
-                "the client label is not for a block statement".into()
-            }
-            Error::MoreThanOneJSXRoot => "only one JSX root permitted per file".into(),
-            Error::UnexpectedTopLevelStatement => "unexpected top level statement".into(),
-            Error::ServerFunctionRedeclared(word) => format!(
+            SyntaxError::MoreThanOneJSXRoot => "only one JSX root permitted per file".into(),
+            SyntaxError::UnexpectedTopLevelStatement => "unexpected top level statement".into(),
+            SyntaxError::ServerFunctionRedeclared(word) => format!(
                 "server functions can only be declared once, {} has multiple declarations",
                 word
             )
@@ -56,63 +88,32 @@ pub struct FunctionDeclaration {
 #[derive(Debug)]
 pub struct ServerBlock {
     pub block: Box<BlockStmt>,
-    function_declarations: HashMap<JsWord, FunctionDeclaration>,
+    _function_declarations: HashMap<JsWord, FunctionDeclaration>,
 }
 
-impl ServerBlock {
-    pub fn contains_function_declaration(&self, ident: &Ident) -> bool {
-        self.function_declarations.contains_key(&ident.sym)
-    }
-
-    pub fn get_function_declaration(&self, ident: &Ident) -> Option<&FunctionDeclaration> {
-        self.function_declarations.get(&ident.sym)
-    }
-}
-
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ParseResult {
     pub declarations: Vec<ModuleDecl>,
     pub server: Option<ServerBlock>,
     pub client: Option<LabeledStmt>,
-    pub jsx: Option<JSXElement>,
+    pub jsx: JSXElement,
 }
 
-pub struct Parser<'a> {
-    handler: &'a Handler,
+#[derive(Default)]
+pub struct BmrParser {
+    errors: Vec<ParserError>,
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(handler: &'a Handler) -> Self {
-        Parser { handler }
-    }
+impl BmrParser {
+    pub fn parse(&mut self, module: Module) -> anyhow::Result<ParseResult> {
+        let mut declarations = vec![];
+        let mut server: Option<ServerBlock> = None;
+        let mut client: Option<LabeledStmt> = None;
+        let mut jsx: Option<JSXElement> = None;
 
-    pub fn parse(&mut self, source_file: rc::Rc<SourceFile>) -> anyhow::Result<ParseResult> {
-        let lexer = Lexer::new(
-            Syntax::Typescript(TsConfig {
-                tsx: true,
-                ..Default::default()
-            }),
-            Default::default(),
-            StringInput::from(&*source_file),
-            None,
-        );
-
-        let mut parser = SWCParser::new_from(Capturing::new(lexer));
-
-        for e in parser.take_errors() {
-            e.into_diagnostic(&self.handler).emit();
-        }
-
-        let ast = parser
-            .parse_module()
-            .map_err(|e| e.into_diagnostic(&self.handler).emit())
-            .expect("failed to parse your boomer file 😞");
-
-        let mut result = ParseResult::default();
-
-        for module_item in ast.body {
+        for module_item in module.body {
             match module_item {
-                ModuleItem::ModuleDecl(d) => result.declarations.push(d),
+                ModuleItem::ModuleDecl(d) => declarations.push(d),
                 ModuleItem::Stmt(s) => match s {
                     Stmt::Labeled(l) => match &*l.label.sym {
                         "server" => {
@@ -121,54 +122,65 @@ impl<'a> Parser<'a> {
 
                                 visitor.visit_block_stmt(&block);
 
-                                for e in visitor.take_errors() {
-                                    self.emit_error(e.0, e.1);
-                                }
+                                self.errors.append(visitor.take_errors().as_mut());
 
-                                result.server = Some(ServerBlock {
+                                server = Some(ServerBlock {
                                     block: Box::new(block),
-                                    function_declarations: visitor.function_declarations,
+                                    _function_declarations: visitor.function_declarations,
                                 });
                             } else {
-                                self.emit_error(l.span, Error::LabeledServerIsNotBlock);
+                                self.emit_error(l.span, SyntaxError::LabeledServerIsNotBlock);
                             }
                         }
-                        "client" => result.client = Some(l),
+                        "client" => client = Some(l),
                         _ => {
                             self.emit_error(
                                 l.label.span,
-                                Error::UnexpectedLabeledStatement(l.label.sym),
+                                SyntaxError::UnexpectedLabeledStatement(l.label.sym),
                             );
                         }
                     },
                     Stmt::Expr(e) => {
-                        if let Expr::JSXElement(jsx) = *e.expr {
-                            if result.jsx.is_some() {
-                                self.emit_error(e.span, Error::MoreThanOneJSXRoot);
+                        if let Expr::JSXElement(jsx_el) = *e.expr {
+                            if jsx.is_some() {
+                                self.emit_error(e.span, SyntaxError::MoreThanOneJSXRoot);
                             } else {
-                                result.jsx = Some(*jsx);
+                                jsx = Some(*jsx_el);
                             }
                         }
                     }
-                    _ => self.emit_error(s.span(), Error::UnexpectedTopLevelStatement),
+                    _ => self.emit_error(s.span(), SyntaxError::UnexpectedTopLevelStatement),
                 },
             }
         }
 
+        let jsx = jsx.expect("Missing JSX Element");
+
+        let result = ParseResult {
+            declarations,
+            server,
+            client,
+            jsx,
+        };
+
         Ok(result)
     }
 
-    fn emit_error(&mut self, span: Span, error: Error) {
-        let mut db = self.handler.struct_err(&error.msg());
-        db.set_span(span);
-        db.emit();
+    #[cold]
+    #[inline(never)]
+    fn emit_error(&mut self, span: Span, error: SyntaxError) {
+        self.errors.push(ParserError::new(span, error));
+    }
+
+    pub fn take_errors(&self) -> Vec<ParserError> {
+        self.errors.to_owned()
     }
 }
 
 #[derive(Debug, Default)]
 struct ServerVisitor {
     function_declarations: HashMap<JsWord, FunctionDeclaration>,
-    errors: Vec<Box<(Span, Error)>>,
+    errors: Vec<ParserError>,
 }
 
 impl ServerVisitor {
@@ -176,7 +188,7 @@ impl ServerVisitor {
         ServerVisitor::default()
     }
 
-    fn take_errors(&self) -> Vec<Box<(Span, Error)>> {
+    fn take_errors(&self) -> Vec<ParserError> {
         self.errors.to_owned()
     }
 }
@@ -188,10 +200,10 @@ impl Visit for ServerVisitor {
 
     fn visit_fn_decl(&mut self, fn_decl: &FnDecl) {
         if self.function_declarations.contains_key(&fn_decl.ident.sym) {
-            self.errors.push(Box::new((
+            self.errors.push(ParserError::new(
                 fn_decl.span(),
-                Error::ServerFunctionRedeclared(fn_decl.ident.sym.to_owned()),
-            )))
+                SyntaxError::ServerFunctionRedeclared(fn_decl.ident.sym.to_owned()),
+            ))
         } else {
             let function_declaration = FunctionDeclaration {
                 is_async: fn_decl.function.is_async,
