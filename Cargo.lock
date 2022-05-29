@@ -125,6 +125,7 @@ dependencies = [
  "anyhow",
  "auto_impl",
  "codegen_macros",
+ "id-arena",
  "swc_atoms",
  "swc_common",
  "swc_ecma_ast",
@@ -244,6 +245,12 @@ checksum = "62b467343b94ba476dcb2500d242dadbb39557df889310ac77c5d99100aaac33"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "id-arena"
+version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25a2bc672d1148e28034f176e01fffebb08b35768468cc954630da77a1449005"
 
 [[package]]
 name = "ident_case"

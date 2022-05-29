@@ -1,29 +1,32 @@
 use anyhow::{anyhow, Result};
+use id_arena::Arena;
 use swc_atoms::JsWord;
 use swc_ecma_ast::{Module, Pat};
 use swc_ecma_visit::{Visit, VisitWith};
 
-#[derive(Debug)]
-struct ReactiveStatement {
+type ScopeId = id_arena::Id<Scope>;
 
-}
+#[derive(Debug)]
+struct ReactiveStatement {}
 
 #[derive(Default, Debug)]
 struct Scope {
     params: Vec<JsWord>,
     var_decls: Vec<JsWord>,
     reactive_statements: Vec<ReactiveStatement>,
-    scopes: Vec<Box<Scope>>,
+    scopes: Vec<ScopeId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct ReactiveGraph {
+    arena: Arena<Scope>,
     root: Scope,
 }
 
 #[derive(Default)]
 struct Context {
-    scope_stack: Vec<Box<Scope>>,
+    arena: Option<Arena<Scope>>,
+    scope_stack: Vec<Scope>,
 }
 
 struct Parser<'a> {
@@ -35,14 +38,16 @@ impl<'a> Parser<'a> {
     fn new(ast: &'a Module) -> Self {
         Parser {
             ast,
-            context: Default::default(),
+            context: Context::default(),
         }
     }
 
     fn parse_module(&mut self) -> Result<ReactiveGraph> {
-        let scope = Scope::default();
+        let arena = Arena::<Scope>::new();
+        self.context.arena = Some(arena);
 
-        self.context.scope_stack.push(Box::new(scope));
+        let scope = Scope::default();
+        self.context.scope_stack.push(scope);
 
         self.ast.visit_with(self);
 
@@ -54,12 +59,13 @@ impl<'a> Parser<'a> {
                     .pop()
                     .expect("scope is in the stack");
 
-                Ok(ReactiveGraph { root: *scope })
+                Ok(ReactiveGraph {
+                    arena: self.context.arena.take().unwrap(),
+                    root: scope,
+                })
             }
             0 => Err(anyhow!("unexpected: scope stack is empty")),
-            _ => Err(anyhow!(
-                "unexpected: scope stack has more than one scope"
-            )),
+            _ => Err(anyhow!("unexpected: scope stack has more than one scope")),
         }
     }
 }
@@ -74,7 +80,7 @@ impl<'a> Visit for Parser<'a> {
             }
         }
 
-        self.context.scope_stack.push(Box::new(scope));
+        self.context.scope_stack.push(scope);
 
         n.visit_children_with(self);
 
@@ -90,29 +96,36 @@ impl<'a> Visit for Parser<'a> {
             .last_mut()
             .expect("parent scope is in the stack");
 
+        let scope = self.context.arena.as_mut().unwrap().alloc(scope);
         parent_scope.scopes.push(scope);
     }
 
     fn visit_labeled_stmt(&mut self, n: &swc_ecma_ast::LabeledStmt) {
-       match &*n.label.sym {
-           "$" => {
-               let scope = self.context.scope_stack.last_mut().expect("stack not empty");
+        match &*n.label.sym {
+            "$" => {
+                let scope = self
+                    .context
+                    .scope_stack
+                    .last_mut()
+                    .expect("stack not empty");
 
-               scope.reactive_statements.push(ReactiveStatement {  });
-           },
-           _ => ()
-       }  
+                scope.reactive_statements.push(ReactiveStatement {});
+            }
+            _ => (),
+        }
     }
 
     fn visit_var_declarator(&mut self, n: &swc_ecma_ast::VarDeclarator) {
-       let scope = self.context.scope_stack.last_mut().expect("stack not empty") ;
+        let scope = self
+            .context
+            .scope_stack
+            .last_mut()
+            .expect("stack not empty");
 
-       match &n.name {
-           Pat::Ident(id) => {
-               scope.var_decls.push(id.id.sym.clone())
-           },
-           _ => ()
-       }
+        match &n.name {
+            Pat::Ident(id) => scope.var_decls.push(id.id.sym.clone()),
+            _ => (),
+        }
     }
 }
 
