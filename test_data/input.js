@@ -9,6 +9,10 @@ client: {
 
 <div>
   <h1>{hello}</h1>
-  <h2>{world}</h2>
-  <button onClick={() => setCount(count() + 1)}>{count()}</button>
+  <h2>
+    {world}
+    <span>hello</span>
+  </h2>
+  {/* <button onClick={() => setCount(count() + 1)}>{count()}</button> */}
+  <button>Click Me</button>
 </div>;

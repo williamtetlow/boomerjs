@@ -1,5 +1,6 @@
 mod parser;
 mod transform;
+mod reactive_script;
 
 use crate::{parser::BmrParser, transform::BmrTransform};
 use std::path::Path;

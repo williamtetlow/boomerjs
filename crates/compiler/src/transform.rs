@@ -98,6 +98,8 @@ pub struct JSXTransform<'a> {
     ctx: JSXTransformContext,
 
     client_block: &'a Option<ClientBlock>,
+
+    jsx_el_stack: Vec<Vec<Option<ExprOrSpread>>>,
 }
 
 impl<'a> JSXTransform<'a> {
@@ -106,6 +108,7 @@ impl<'a> JSXTransform<'a> {
             cur_children: Default::default(),
             ctx: Default::default(),
             client_block,
+            jsx_el_stack: Default::default(),
         }
     }
     pub fn transform(&mut self, jsx: JSXElement) -> Vec<ModuleDecl> {
@@ -211,9 +214,14 @@ impl<'a> Visit for JSXTransform<'a> {
                     .nth(0)
                     .map_or(false, |first_char| first_char.is_lowercase())
                 {
+                    self.cur_children = vec![];
+
+                    self.jsx_el_stack.push(vec![]);
+
                     jsx_el.visit_children_with(self);
 
-                    let children: Vec<Option<ExprOrSpread>> = self.cur_children.drain(..).collect();
+                    let children: Vec<Option<ExprOrSpread>> =
+                        self.jsx_el_stack.pop().unwrap_or(vec![]);
 
                     self.cur_children.push(html_open_tag!(&*id.sym));
                     self.cur_children.push(array_lit!(children));
@@ -276,20 +284,24 @@ impl<'a> Visit for JSXTransform<'a> {
 
     fn visit_jsx_expr_container(&mut self, expr_cont: &JSXExprContainer) {
         if let JSXExpr::Expr(e) = &expr_cont.expr {
-            self.cur_children.push(Some(ExprOrSpread {
-                spread: None,
-                expr: e.to_owned(),
-            }));
+            if let Some(last) = self.jsx_el_stack.last_mut() {
+                last.push(Some(ExprOrSpread {
+                    spread: None,
+                    expr: e.to_owned(),
+                }));
+            }
         }
     }
 
     fn visit_call_expr(&mut self, call: &CallExpr) {}
 
     fn visit_jsx_text(&mut self, txt: &JSXText) {
-        self.cur_children.push(str_lit!(
-            JsWord::from(format!("`{}`", &*txt.value)),
-            txt.value.clone()
-        ));
+        if let Some(last) = self.jsx_el_stack.last_mut() {
+            last.push(str_lit!(
+                JsWord::from(format!("`{}`", &*txt.value)),
+                txt.value.clone()
+            ));
+        }
     }
 }
 
