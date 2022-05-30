@@ -22,10 +22,10 @@ struct Scope {
     reactive_statements: Vec<ReactiveStatement>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ReactiveGraph {
     arena: Arena<Scope>,
-    root: Scope,
+    root: ScopeId,
 }
 
 #[derive(Default)]
@@ -65,6 +65,8 @@ impl<'a> Parser<'a> {
                     .pop()
                     .expect("scope is in the stack");
 
+                let scope = self.alloc_scope(scope);
+
                 Ok(ReactiveGraph {
                     arena: self.context.arena.take().unwrap(),
                     root: scope,
@@ -75,19 +77,24 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn alloc_scope(&mut self, scope: Scope) -> ScopeId {
+    fn alloc_scope(&mut self, mut scope: Scope) -> ScopeId {
         if let Some(arena) = self.context.arena.as_mut() {
-            arena.alloc(scope)
+            arena.alloc_with_id(|id| {
+                scope.id = Some(id);
+                return scope;
+            })
         } else {
             panic!("arena is None")
         }
     }
 
-    fn register_scope(&mut self, scope: ScopeId) {
-        self.update_last_scope(|parent| parent.children.push(scope));
+    fn register_scope(&mut self, scope_id: ScopeId) {
+        let parent_id = self.get_or_set_last_scope_id();
+        self.context.arena.as_mut().expect("arena is defined")[scope_id].parent = Some(parent_id);
+        self.update_last_scope(|parent| parent.children.push(scope_id));
     }
 
-    fn register_reactive_statment(&mut self, r_stmt: ReactiveStatement) {
+    fn register_reactive_statement(&mut self, r_stmt: ReactiveStatement) {
         self.update_last_scope(|parent| parent.reactive_statements.push(r_stmt));
     }
 
@@ -135,7 +142,7 @@ impl<'a> Visit for Parser<'a> {
 
         n.visit_children_with(self);
 
-        let mut scope = self
+        let scope = self
             .context
             .scope_stack
             .pop()
@@ -144,10 +151,10 @@ impl<'a> Visit for Parser<'a> {
         let has_reactive_stamements = !scope.reactive_statements.is_empty();
         let has_children = !scope.children.is_empty();
         let has_been_assigned_id = scope.id.is_some();
-
+        // think about how we store scope
+        // should we alloc all and keep ids in stack too
+        // or do some sort of id allocation based off what is in the stack
         if has_reactive_stamements || has_children || has_been_assigned_id {
-            let parent_id = self.get_or_set_last_scope_id();
-            scope.parent = Some(parent_id);
             let scope = self.alloc_scope(scope);
             self.register_scope(scope);
         }
@@ -169,7 +176,7 @@ impl<'a> Visit for Parser<'a> {
                             .cur_reactive_stmt
                             .take()
                             .expect("reactive statement exists");
-                        self.register_reactive_statment(r_stmt);
+                        self.register_reactive_statement(r_stmt);
                     }
                     _ => panic!("only expression statements are supported in reactive statement"),
                 }

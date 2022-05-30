@@ -1,0 +1,69 @@
+result: ReactiveGraph {
+    arena: Arena {
+        arena_id: 0,
+        items: [
+            Scope {
+                id: None,
+                children: [],
+                parent: Some(
+                    Id {
+                        idx: 0,
+                    },
+                ),
+                params: [
+                    Atom('x' type=inline),
+                ],
+                var_decls: [],
+                reactive_statements: [
+                    ReactiveStatement {
+                        signals: [
+                            Atom('x' type=inline),
+                        ],
+                    },
+                ],
+            },
+            Scope {
+                id: None,
+                children: [],
+                parent: Some(
+                    Id {
+                        idx: 0,
+                    },
+                ),
+                params: [
+                    Atom('x' type=inline),
+                ],
+                var_decls: [],
+                reactive_statements: [
+                    ReactiveStatement {
+                        signals: [
+                            Atom('x' type=inline),
+                        ],
+                    },
+                ],
+            },
+        ],
+        _phantom: PhantomData,
+    },
+    root: Scope {
+        id: Some(
+            Id {
+                idx: 0,
+            },
+        ),
+        children: [
+            Id {
+                idx: 0,
+            },
+            Id {
+                idx: 1,
+            },
+        ],
+        parent: None,
+        params: [],
+        var_decls: [
+            Atom('value' type=inline),
+        ],
+        reactive_statements: [],
+    },
+}
