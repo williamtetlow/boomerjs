@@ -1,20 +1,25 @@
 use anyhow::{anyhow, Result};
 use id_arena::Arena;
 use swc_atoms::JsWord;
-use swc_ecma_ast::{Module, Pat};
+use swc_ecma_ast::{Expr, Module, Pat};
 use swc_ecma_visit::{Visit, VisitWith};
 
 type ScopeId = id_arena::Id<Scope>;
 
-#[derive(Debug)]
-struct ReactiveStatement {}
+#[derive(Debug, Default)]
+struct ReactiveStatement {
+    signals: Vec<JsWord>,
+}
 
 #[derive(Default, Debug)]
 struct Scope {
+    id: Option<ScopeId>,
+    children: Vec<ScopeId>,
+    parent: Option<ScopeId>,
+
     params: Vec<JsWord>,
     var_decls: Vec<JsWord>,
     reactive_statements: Vec<ReactiveStatement>,
-    scopes: Vec<ScopeId>,
 }
 
 #[derive(Debug, Default)]
@@ -27,6 +32,7 @@ struct ReactiveGraph {
 struct Context {
     arena: Option<Arena<Scope>>,
     scope_stack: Vec<Scope>,
+    cur_reactive_stmt: Option<ReactiveStatement>,
 }
 
 struct Parser<'a> {
@@ -68,6 +74,51 @@ impl<'a> Parser<'a> {
             _ => Err(anyhow!("unexpected: scope stack has more than one scope")),
         }
     }
+
+    fn alloc_scope(&mut self, scope: Scope) -> ScopeId {
+        if let Some(arena) = self.context.arena.as_mut() {
+            arena.alloc(scope)
+        } else {
+            panic!("arena is None")
+        }
+    }
+
+    fn register_scope(&mut self, scope: ScopeId) {
+        self.update_last_scope(|parent| parent.children.push(scope));
+    }
+
+    fn register_reactive_statment(&mut self, r_stmt: ReactiveStatement) {
+        self.update_last_scope(|parent| parent.reactive_statements.push(r_stmt));
+    }
+
+    fn register_var_decl(&mut self, v_decl: JsWord) {
+        self.update_last_scope(|parent| parent.var_decls.push(v_decl));
+    }
+
+    fn update_last_scope<F>(&mut self, update_fn: F)
+    where
+        F: FnOnce(&mut Scope) -> (),
+    {
+        if let Some(parent) = self.context.scope_stack.last_mut() {
+            update_fn(parent);
+        } else {
+            panic!("no parent")
+        }
+    }
+
+    fn get_or_set_last_scope_id(&mut self) -> ScopeId {
+        if let Some(parent) = self.context.scope_stack.last_mut() {
+            if let Some(id) = parent.id {
+                id
+            } else {
+                let id = self.context.arena.as_ref().unwrap().next_id();
+                parent.id = Some(id);
+                id
+            }
+        } else {
+            panic!("no parent")
+        }
+    }
 }
 
 impl<'a> Visit for Parser<'a> {
@@ -84,47 +135,64 @@ impl<'a> Visit for Parser<'a> {
 
         n.visit_children_with(self);
 
-        let scope = self
+        let mut scope = self
             .context
             .scope_stack
             .pop()
             .expect("scope is in the stack");
 
-        let parent_scope = self
-            .context
-            .scope_stack
-            .last_mut()
-            .expect("parent scope is in the stack");
+        let has_reactive_stamements = !scope.reactive_statements.is_empty();
+        let has_children = !scope.children.is_empty();
+        let has_been_assigned_id = scope.id.is_some();
 
-        let scope = self.context.arena.as_mut().unwrap().alloc(scope);
-        parent_scope.scopes.push(scope);
+        if has_reactive_stamements || has_children || has_been_assigned_id {
+            let parent_id = self.get_or_set_last_scope_id();
+            scope.parent = Some(parent_id);
+            let scope = self.alloc_scope(scope);
+            self.register_scope(scope);
+        }
     }
 
     fn visit_labeled_stmt(&mut self, n: &swc_ecma_ast::LabeledStmt) {
         match &*n.label.sym {
             "$" => {
-                let scope = self
-                    .context
-                    .scope_stack
-                    .last_mut()
-                    .expect("stack not empty");
+                if self.context.cur_reactive_stmt.is_some() {
+                    panic!("nested reactive statements is not supported")
+                }
 
-                scope.reactive_statements.push(ReactiveStatement {});
+                match &*n.body {
+                    swc_ecma_ast::Stmt::Expr(e) => {
+                        self.context.cur_reactive_stmt = Some(ReactiveStatement::default());
+                        e.visit_with(self);
+                        let r_stmt = self
+                            .context
+                            .cur_reactive_stmt
+                            .take()
+                            .expect("reactive statement exists");
+                        self.register_reactive_statment(r_stmt);
+                    }
+                    _ => panic!("only expression statements are supported in reactive statement"),
+                }
             }
             _ => (),
         }
     }
 
     fn visit_var_declarator(&mut self, n: &swc_ecma_ast::VarDeclarator) {
-        let scope = self
-            .context
-            .scope_stack
-            .last_mut()
-            .expect("stack not empty");
-
         match &n.name {
-            Pat::Ident(id) => scope.var_decls.push(id.id.sym.clone()),
+            Pat::Ident(id) => self.register_var_decl(id.id.sym.clone()),
             _ => (),
+        }
+    }
+
+    fn visit_call_expr(&mut self, n: &swc_ecma_ast::CallExpr) {
+        if let Some(cur_reactive_stmt) = self.context.cur_reactive_stmt.as_mut() {
+            for arg in &n.args {
+                match &*arg.expr {
+                    Expr::Ident(id) => cur_reactive_stmt.signals.push(id.sym.clone()),
+                    _ => (),
+                }
+            }
         }
     }
 }
