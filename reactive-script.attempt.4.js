@@ -1,6 +1,6 @@
 import logError from "log";
 
-function log(arg) {
+export function log(arg) {
   $: console.log(arg);
 }
 

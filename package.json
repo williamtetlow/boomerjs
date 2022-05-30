@@ -1,0 +1,24 @@
+{
+  "name": "boomerjs",
+  "version": "1.0.0",
+  "description": "",
+  "main": "reactive-script.attempt.4.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "bundle": "esbuild test-multi-file/output/index.js --bundle --outfile=test-multi-file/esbuild-out.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/williamtetlow/boomerjs.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/williamtetlow/boomerjs/issues"
+  },
+  "homepage": "https://github.com/williamtetlow/boomerjs#readme",
+  "dependencies": {
+    "esbuild": "^0.14.42"
+  }
+}
